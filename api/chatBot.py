@@ -11,6 +11,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
+from image_generator import generate_image, save_image
+import os
+from datetime import datetime
 
 # Load environment variables from .env file, allowing overrides
 import os
@@ -137,7 +140,7 @@ async def chat_interaction(input_text):
 
         # Determine which databases to query
         databases_to_query = [most_voted_label]
-        if second_classification_result["scores"][0] >= 0.5:
+        if second_classification_result["scores"][0] >= 0.8:
             second_most_voted_label = second_classification_result["labels"][0]
             databases_to_query.append(second_most_voted_label)
             print("Second most voted label:", second_most_voted_label)
@@ -147,7 +150,7 @@ async def chat_interaction(input_text):
         for db_label in databases_to_query:
             if db_label == "ecofeminism":
                 vector_store = vector_store_ecofeminism
-            elif db_label == "permaculture":
+            elif db_label == "agriculture":
                 vector_store = vector_store_permaculture
             elif db_label == "mushrooms":
                 vector_store = vector_store_mushrooms
@@ -217,6 +220,35 @@ async def chat_endpoint(chat_input: ChatInput):
     try:
         response = await chat_interaction(chat_input.message)
         return {"response": response}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# New endpoint for generating images
+@app.post("/generate-image")
+async def generate_image_endpoint(chat_input: ChatInput):
+    try:
+        # Generate a prompt based on the chat history
+        prompt = f"Create an image about permaculture based on this conversation: {chat_input.message}"
+
+        # Generate the image
+        image_bytes = generate_image(prompt)
+
+        if image_bytes:
+            # Create a directory to store images if it doesn't exist
+            os.makedirs("generated_images", exist_ok=True)
+
+            # Generate a unique filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"generated_images/permaculture_{timestamp}.jpg"
+
+            # Save the image
+            if save_image(image_bytes, filename):
+                return {"image_path": filename}
+            else:
+                return {"error": "Failed to save the image"}
+        else:
+            return {"error": "Failed to generate the image"}
     except Exception as e:
         return {"error": str(e)}
 
