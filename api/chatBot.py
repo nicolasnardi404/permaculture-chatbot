@@ -18,6 +18,9 @@ from langchain import LLMChain
 from typing import List
 import re
 import torch
+import base64
+import requests
+from fastapi import HTTPException
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -350,32 +353,44 @@ async def chat_endpoint(chat_input: ChatInput):
         return {"error": str(e)}
 
 
+from huggingface_hub import InferenceClient
+
+client_hf = InferenceClient(api_key=hfApiKey)
+
+
 # New endpoint for generating images
 @app.post("/generate-image")
 async def generate_image_endpoint(chat_input: ChatInput):
     try:
-        # Generate a prompt based on the chat history
-        prompt = f"Create an image about permaculture based on this conversation: {chat_input.message}"
+        print("Starting image generation process")
 
-        # Generate the image
+        print("Initializing text generation")
+        print(f"Input message: {chat_input.message}")
+
+        generated_text = client_hf.text_generation(
+            model="meta-llama/Llama-3.2-1B-Instruct",
+            prompt=f"Based on this conversation, create a short description for an image about permaculture: {chat_input.message}",
+            max_new_tokens=50,
+            temperature=0.7,
+            return_full_text=False,
+        )
+
+        print(f"Generated text: {generated_text}")
+
+        prompt = f"Create an image about permaculture based on this description: {generated_text}"
+
+        print("Generating image")
         image_bytes = generate_image(prompt)
 
         if image_bytes:
-            # Create a directory to store images if it doesn't exist
-            os.makedirs("generated_images", exist_ok=True)
-
-            # Generate a unique filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"generated_images/permaculture_{timestamp}.jpg"
-
-            # Save the image
-            if save_image(image_bytes, filename):
-                return {"image_path": filename}
-            else:
-                return {"error": "Failed to save the image"}
+            print("Image generated successfully")
+            base64_image = base64.b64encode(image_bytes).decode("utf-8")
+            return {"image_data": f"data:image/jpeg;base64,{base64_image}"}
         else:
+            print("Failed to generate image")
             return {"error": "Failed to generate the image"}
     except Exception as e:
+        print(f"An error occurred: {str(e)}")
         return {"error": str(e)}
 
 
