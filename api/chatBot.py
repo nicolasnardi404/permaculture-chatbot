@@ -1,9 +1,8 @@
 import os
 from dotenv import load_dotenv
-
 from langchain.prompts import PromptTemplate
 from langchain_community.vectorstores import SupabaseVectorStore
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAI, OpenAIEmbeddings, ChatOpenAI
 from supabase import create_client
 from langchain.schema.output_parser import StrOutputParser
 from transformers import pipeline
@@ -12,12 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
 from image_generator import generate_image, save_image
-import os
 from datetime import datetime
 
-# Load environment variables from .env file, allowing overrides
-import os
-from dotenv import load_dotenv
+from langchain.agents import Tool, AgentExecutor, create_react_agent
+from langchain import LLMChain
+from typing import List
+import re
+import torch
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -28,18 +28,17 @@ hfApiKey = os.getenv("HUGGINGFACE_API_KEY")
 sbApiKey = os.getenv("SUPABASE_API_KEY")
 sbUrl = os.getenv("SUPABASE_URL_LC_CHATBOT")
 
-# Debugging: Check that the keys are being loaded properly (make sure to remove print statements before deployment)
-print("OPENAI_API_KEY:", openAIApiKey)
-print("HUGGINGFACE_API_KEY:", hfApiKey)
-print("SUPABASE_API_KEY:", sbApiKey)
-print("SUPABASE_URL_LC_CHATBOT:", sbUrl)
-
+# Debugging: Check that the keys are being loaded properly
+print("OPENAI_API_KEY is set:", bool(openAIApiKey))
+print("HUGGINGFACE_API_KEY is set:", bool(hfApiKey))
+print("SUPABASE_API_KEY is set:", bool(sbApiKey))
+print("SUPABASE_URL_LC_CHATBOT is set:", bool(sbUrl))
 
 client = create_client(sbUrl, sbApiKey)
 print("Supabase client created.")
 
 # Initialize embeddings and vector store
-embeddings = OpenAIEmbeddings()  # Make sure embeddings are set correctly
+embeddings = OpenAIEmbeddings()
 print("Embeddings initialized.")
 
 vectorStore = SupabaseVectorStore(
@@ -49,9 +48,6 @@ vectorStore = SupabaseVectorStore(
     query_name="match_documents",
 )
 print("Vector store created.")
-
-# Update the import statement for ChatOpenAI
-from langchain_openai import ChatOpenAI
 
 # Initialize the language model with the API key
 llm = ChatOpenAI(api_key=openAIApiKey)
@@ -88,11 +84,7 @@ standaloneQuestionTemplate = "Given a question, convert it to a standalone quest
 
 documentProcessingTemplate = """
 Process the information on: {documents}
-you are a chat bot helping people with permaculture and mushrooms. answer the question: {question}"""
-
-# documentProcessingTemplate = """
-# Process the information on: {documents}
-# and you are professional political journalist. make sure to make the right citations and references to the sources. Don't make up any information. write and article on: {question}"""
+You are a chatbot helping people with permaculture and mushrooms. Answer the question: {question}"""
 
 # Create prompt objects
 standaloneQuestionPrompt = PromptTemplate.from_template(standaloneQuestionTemplate)
@@ -109,13 +101,115 @@ documentProcessingChain = documentProcessingPrompt.pipe(llm).pipe(StrOutputParse
 # Combine the chains
 combinedChain = standaloneQuestionChain | documentProcessingChain
 
-
 # Initialize the zero-shot classification pipeline
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+device = 0 if torch.cuda.is_available() else -1
+classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    tokenizer_kwargs={"clean_up_tokenization_spaces": True},
+    device=device,
+)
+
+# === Agent Integration Starts Here ===
 
 
-# New function to handle chat interactions
-async def chat_interaction(input_text):
+# Define Tools
+def get_documents(query: str, category: str):
+    """Retrieve documents from the specified category."""
+    if category == "ecofeminism":
+        vector_store = vector_store_ecofeminism
+    elif category == "permaculture":
+        vector_store = vector_store_permaculture
+    elif category == "mushrooms":
+        vector_store = vector_store_mushrooms
+    else:
+        return "I don't have information on that topic."
+
+    retriever = vector_store.as_retriever()
+    documents = retriever.get_relevant_documents(query)
+    combined_docs = "\n\n".join([doc.page_content for doc in documents])
+    return combined_docs
+
+
+# Define the tools
+knowledge_tool = Tool(
+    name="KnowledgeBase",
+    func=lambda query, category: get_documents(query, category),
+    description="Useful for answering questions about ecofeminism, permaculture, and mushrooms.",
+)
+
+general_chat_tool = Tool(
+    name="GeneralChat",
+    func=lambda query: general_chat(query),
+    description="Useful for general conversation and questions outside the knowledge base.",
+)
+
+tools = [knowledge_tool, general_chat_tool]
+
+
+# Define the general chat function
+def general_chat(query: str) -> str:
+    """Handle general chat using the OpenAI model."""
+    general_llm = OpenAI(api_key=openAIApiKey, temperature=0.7)
+    response = general_llm(query)
+    return response
+
+
+# Initialize the language model for the agent
+agent_llm = OpenAI(api_key=openAIApiKey, temperature=0)
+
+# Define the prompt template for the agent
+agent_prompt = PromptTemplate.from_template(
+    """You are an AI assistant specializing in permaculture, ecofeminism, and mushrooms.
+
+    **Behavior Guidelines:**
+    - **Greetings & Small Talk:** When the user's input is a simple greeting or involves small talk, respond appropriately *without* using any tools. **Do not** include `Action`, `Action Input`, or `Observation` fields. Provide only the `Final Answer`.
+    - **Specific Questions:** When the user asks a specific question or requests information, utilize the provided tools to generate a comprehensive response. If the question is not about agriculture, mushrooms or permaculture, respond with "I'm sorry, I'm not trained on this topic. Try another question."
+
+    **Available Tools:**
+    {tools}
+
+    **Response Format:**
+    - **For Greetings & Small Talk:**
+        ```
+        Final Answer: [Your appropriate response]
+        ```
+    - **For Specific Questions:**
+        ```
+        Question: [User's input]
+        Thought: [Your reasoning]
+        Action: [One of {tool_names}]
+        Action Input: [Input for the action]
+        Observation: [Result of the action]
+        ... (This Thought/Action/Action Input/Observation sequence can repeat N times)
+        Thought: I now know the final answer
+        Final Answer: [Your final answer to the user's question]
+        ```
+
+    **Begin!**
+
+    Question: {input}
+    Thought: {agent_scratchpad}
+    """
+)
+
+# Create the agent
+agent = create_react_agent(llm=agent_llm, tools=tools, prompt=agent_prompt)
+
+# Create the agent executor with handle_parsing_errors=True
+agent_executor = AgentExecutor.from_agent_and_tools(
+    agent=agent, tools=tools, verbose=True, handle_parsing_errors=True  # Add this line
+)
+
+# === Agent Integration Ends Here ===
+
+
+# New function to handle chat interactions with agent
+import time
+from langchain.callbacks import get_openai_callback
+
+
+async def chat_interaction(input_text: str) -> str:
     # Define candidate labels for classification
     candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
 
@@ -150,7 +244,7 @@ async def chat_interaction(input_text):
         for db_label in databases_to_query:
             if db_label == "ecofeminism":
                 vector_store = vector_store_ecofeminism
-            elif db_label == "agriculture":
+            elif db_label == "permaculture":
                 vector_store = vector_store_permaculture
             elif db_label == "mushrooms":
                 vector_store = vector_store_mushrooms
@@ -163,17 +257,49 @@ async def chat_interaction(input_text):
         # Combine all retrieved documents
         combined_docs = "\n\n".join([doc.page_content for doc in all_documents])
 
-        # Create a new combined chain with the updated retriever
-        response = documentProcessingChain.invoke(
-            {"documents": combined_docs, "question": input_text}
-        )
-        print(
-            f"Combined response from {', '.join(databases_to_query)} databases:",
-            response,
-        )
-        return response
+        if combined_docs:
+            # Create a new combined chain with the updated retriever
+            response = documentProcessingChain.invoke(
+                {"documents": combined_docs, "question": input_text}
+            )
+            print(
+                f"Combined response from {', '.join(databases_to_query)} databases:",
+                response,
+            )
+            return response
+        else:
+            # If no documents found, use the general chat tool
+            print("No relevant documents found. Using general chat.")
+            general_response = general_chat(input_text)
+            return general_response
     else:
-        return "The question is not related to our model."
+        # If classification score is low, use the agent to handle the query
+        print("Low classification confidence. Using agent to handle the query.")
+        try:
+            with get_openai_callback() as cb:
+                start_time = time.time()
+                agent_response = agent_executor.invoke(
+                    {"input": input_text},
+                    return_only_outputs=True,
+                    timeout=30,  # Set a 30-second timeout
+                )
+                end_time = time.time()
+
+            print(f"Agent execution time: {end_time - start_time:.2f} seconds")
+            print(f"Total tokens used: {cb.total_tokens}")
+            print(f"Prompt tokens: {cb.prompt_tokens}")
+            print(f"Completion tokens: {cb.completion_tokens}")
+            print(f"Total cost: ${cb.total_cost:.4f}")
+
+            if isinstance(agent_response, dict) and "output" in agent_response:
+                return agent_response["output"]
+            else:
+                print(f"Unexpected agent response format: {agent_response}")
+                return "I'm sorry, I couldn't generate a proper response. Could you please rephrase your question?"
+
+        except Exception as e:
+            print(f"An error occurred during agent execution: {str(e)}")
+            return "I apologize, but I encountered an error while processing your request. Could you please try again?"
 
 
 # Modified main function to create a chatbot
@@ -253,9 +379,5 @@ async def generate_image_endpoint(chat_input: ChatInput):
         return {"error": str(e)}
 
 
-# Remove the Flask run block
-# if __name__ == "__main__":
-#     app.run(debug=True, port=8000)
-
-# Instead, you would run this with uvicorn:
+# Instructions to run with uvicorn:
 # uvicorn chatBot:app --reload
