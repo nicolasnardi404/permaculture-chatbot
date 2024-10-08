@@ -218,7 +218,7 @@ async def chat_interaction(input_text: str) -> str:
     print("First classification result:", classification_result)
 
     # Check if the highest classification score is above the threshold
-    if classification_result["scores"][0] >= 0.5:
+    if classification_result["scores"][0] >= 0.3:
         # Extract the most voted label
         most_voted_label = classification_result["labels"][0]
         print("Most voted label:", most_voted_label)
@@ -234,7 +234,7 @@ async def chat_interaction(input_text: str) -> str:
 
         # Determine which databases to query
         databases_to_query = [most_voted_label]
-        if second_classification_result["scores"][0] >= 0.8:
+        if second_classification_result["scores"][0] >= 0.5:
             second_most_voted_label = second_classification_result["labels"][0]
             databases_to_query.append(second_most_voted_label)
             print("Second most voted label:", second_most_voted_label)
