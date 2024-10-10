@@ -22,6 +22,7 @@ import torch
 import base64
 import requests
 from fastapi import HTTPException
+from langchain.schema import Document
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -49,7 +50,7 @@ vectorStore = SupabaseVectorStore(
     client=client,
     embedding=embeddings,
     table_name="documents",
-    query_name="match_documents",
+    query_name="match_documents_permaculture",
 )
 print("Vector store created.")
 
@@ -121,15 +122,20 @@ classifier = pipeline(
 def get_documents(query: str, category: str):
     """Retrieve documents from the specified category."""
     if category == "ecofeminism":
-        vector_store = vector_store_ecofeminism
+        function_name = "public.match_documents_ecofeminism"
     elif category == "permaculture":
-        vector_store = vector_store_permaculture
+        function_name = "public.match_documents_permaculture"
     elif category == "mushrooms":
-        vector_store = vector_store_mushrooms
+        function_name = "public.match_documents_mushrooms"
     else:
         return "I don't have information on that topic."
-    retriever = vector_store.as_retriever()
-    documents = retriever.get_relevant_documents(query)
+
+    # Replace 'call_function' with the actual function to retrieve documents
+    documents = vectorStore.get_relevant_documents(
+        query_embedding=query,  # Assuming 'query' is the embedding
+        filter=None,  # Adjust as needed
+        match_count=10,  # Adjust as needed
+    )
     combined_docs = "\n\n".join([doc.page_content for doc in documents])
     return combined_docs
 
@@ -151,11 +157,11 @@ tools = [knowledge_tool, general_chat_tool]
 
 
 # Define the general chat function
-def general_chat(messages: List[dict]) -> str:
-    """Handle general chat using the OpenAI model with conversation history."""
-    general_llm = ChatOpenAI(api_key=openAIApiKey, temperature=0.7)
-    response = general_llm(messages)
-    return response.content
+def general_chat(query: str) -> str:
+    """Handle general chat using the OpenAI model."""
+    general_llm = OpenAI(api_key=openAIApiKey, temperature=0.7)
+    response = general_llm(query)
+    return response
 
 
 # Initialize the language model for the agent
@@ -207,15 +213,13 @@ agent_executor = AgentExecutor.from_agent_and_tools(
 # === Agent Integration Ends Here ===
 
 
-# New function to handle chat interactions with agent
-import time
-from langchain.callbacks import get_openai_callback
-
+# Initialize conversation history
 conversation_history = {}
 
 str_number = str(random.randint(1000, 9999))
 
 
+# Function to handle chat interactions
 async def chat_interaction(input_text: str, session_id: str = str_number) -> str:
     """
     Handle the chat interaction by processing the input, maintaining history,
@@ -231,126 +235,52 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
     history.append({"role": "user", "content": input_text})
     print(f"Updated history after adding user input: {history}")
 
-    # Prepare the messages for the model, including the history
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms. Use the conversation history to provide context-aware responses.",
-        }
-    ] + history
+    try:
+        # Prepare messages for the OpenAI API
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."}
+        ] + history
 
-    # Define candidate labels for classification
-    candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
-    print("Starting Application")
+        # Call the OpenAI API with the conversation history using the invoke method
+        response = llm.invoke(messages)
 
-    # Perform zero-shot classification
-    classification_result = classifier(input_text, candidate_labels)
-    print("First classification result:", classification_result)
+        # Extract the assistant's response
+        assistant_response = response.content
+        print(f"Assistant response: {assistant_response}")
 
-    assistant_response = ""
+        # Add the assistant's response to the history
+        history.append({"role": "assistant", "content": assistant_response})
+        print(f"Updated history after adding assistant response: {history}")
 
-    # Check if the highest classification score is above the threshold
-    if classification_result["scores"][0] >= 0.3:
-        # Extract the most voted label
-        most_voted_label = classification_result["labels"][0]
-        print("Most voted label:", most_voted_label)
+        # Save the updated history back to the session
+        conversation_history[session_id] = history
 
-        # Run a second classification using the remaining labels
-        candidate_labels_without_most_voted = [
-            label for label in candidate_labels if label != most_voted_label
-        ]
-        second_classification_result = classifier(
-            input_text, candidate_labels_without_most_voted
-        )
-        print("Second classification result:", second_classification_result)
+        return assistant_response
 
-        # Determine which databases to query
-        databases_to_query = [most_voted_label]
-        if second_classification_result["scores"][0] >= 0.7:
-            second_most_voted_label = second_classification_result["labels"][0]
-            databases_to_query.append(second_most_voted_label)
-            print("Second most voted label:", second_most_voted_label)
+    except Exception as e:
+        print(f"An error occurred during chat interaction: {str(e)}")
+        return "I apologize, but I encountered an error while processing your request. Could you please try again?"
 
-        # Query the appropriate databases and combine the results
-        all_documents = []
-        for db_label in databases_to_query:
-            if db_label == "ecofeminism":
-                vector_store = vector_store_ecofeminism
-            elif db_label == "permaculture":
-                vector_store = vector_store_permaculture
-            elif db_label == "mushrooms":
-                vector_store = vector_store_mushrooms
 
-            print(f"Querying {db_label} database.")
-            retriever = vector_store.as_retriever()
-            documents = retriever.get_relevant_documents(input_text)
-            all_documents.extend(documents)
+# Modified main function to create a chatbot
+async def main():
+    print("Welcome to the Permaculture Chatbot!")
+    print("Type 'exit' to end the conversation.")
 
-        # Combine all retrieved documents
-        combined_docs = "\n\n".join([doc.page_content for doc in all_documents])
+    while True:
+        user_input = input("\nYou: ")
+        if user_input.lower() == "exit":
+            print("Thank you for using the Permaculture Chatbot. Goodbye!")
+            break
 
-        if combined_docs:
-            try:
-                response = documentProcessingChain.invoke(
-                    {
-                        "documents": combined_docs,
-                        "question": input_text,
-                        "chat_history": messages,
-                    }
-                )
-                assistant_response = (
-                    response if isinstance(response, str) else response.content
-                )
-                print(f"Assistant response: {assistant_response}")
-                print(
-                    f"Combined response from {', '.join(databases_to_query)} databases:",
-                    response,
-                )
-            except Exception as e:
-                print(f"An error occurred during document processing: {str(e)}")
-                assistant_response = "I apologize, but I encountered an error while processing the documents. Could you please try again?"
-        else:
-            # If no documents found, use the general chat tool with history
-            print("No relevant documents found. Using general chat with history.")
-            assistant_response = general_chat(messages)
-    else:
-        # If classification score is low, use the agent to handle the query
-        print("Low classification confidence. Using agent to handle the query.")
-        try:
-            with get_openai_callback() as cb:
-                start_time = time.time()
-                agent_response = agent_executor.invoke(
-                    {"input": input_text},
-                    return_only_outputs=True,
-                    timeout=30,  # Set a 30-second timeout
-                )
-                end_time = time.time()
+        response = await chat_interaction(user_input)
+        print("\nChatbot:", response)
 
-            print(f"Agent execution time: {end_time - start_time:.2f} seconds")
-            print(f"Total tokens used: {cb.total_tokens}")
-            print(f"Prompt tokens: {cb.prompt_tokens}")
-            print(f"Completion tokens: {cb.completion_tokens}")
-            print(f"Total cost: ${cb.total_cost:.4f}")
 
-            if isinstance(agent_response, dict) and "output" in agent_response:
-                assistant_response = agent_response["output"]
-            else:
-                print(f"Unexpected agent response format: {agent_response}")
-                assistant_response = "I'm sorry, I couldn't generate a proper response. Could you please rephrase your question?"
+if __name__ == "__main__":
+    import asyncio
 
-        except Exception as e:
-            print(f"An error occurred during agent execution: {str(e)}")
-            assistant_response = "I apologize, but I encountered an error while processing your request. Could you please try again?"
-
-    # Add the assistant's response to the history
-    history.append({"role": "assistant", "content": assistant_response})
-    print(f"Updated history after adding assistant response: {history}")
-
-    # Update the conversation history for the session
-    conversation_history[session_id] = history
-
-    return assistant_response
-
+    asyncio.run(main())
 
 # Initialize FastAPI app
 app = FastAPI()
