@@ -423,3 +423,9 @@ async def generate_image_endpoint(chat_input: ChatInput):
 
 # Instructions to run with uvicorn:
 # uvicorn chatBot:app --reload
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("chatBot:app", host="0.0.0.0", port=port, reload=False)
