@@ -396,7 +396,7 @@ async def generate_image_endpoint(chat_input: ChatInput):
 
         generated_text = client_hf.text_generation(
             model="meta-llama/Llama-3.2-1B-Instruct",
-            prompt=f"Based on this conversation, create a short description for an image about permaculture: {chat_input.message}",
+            prompt=f"Based on this conversation, create a short description for an image: {chat_input.message}",
             max_new_tokens=50,
             temperature=0.7,
             return_full_text=False,
@@ -404,7 +404,7 @@ async def generate_image_endpoint(chat_input: ChatInput):
 
         print(f"Generated text: {generated_text}")
 
-        prompt = f"Create an image about permaculture based on this description: {generated_text}"
+        prompt = f"Create an image based on this description: {generated_text}"
 
         print("Generating image")
         image_bytes = generate_image(prompt)
