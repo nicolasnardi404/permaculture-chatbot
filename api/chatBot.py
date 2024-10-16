@@ -22,6 +22,7 @@ import torch
 import base64
 import requests
 from fastapi import HTTPException
+import logging
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -106,16 +107,23 @@ documentProcessingChain = documentProcessingPrompt.pipe(llm).pipe(StrOutputParse
 # Combine the chains
 combinedChain = standaloneQuestionChain | documentProcessingChain
 
-# Initialize the zero-shot classification pipeline
-device = 0 if torch.cuda.is_available() else -1
-classifier = pipeline(
-    "zero-shot-classification",
-    model="facebook/bart-large-mnli",
-    tokenizer_kwargs={"clean_up_tokenization_spaces": True},
-    device=device,
-)
 
-# === Agent Integration Starts Here ===
+logging.basicConfig(level=logging.INFO)
+
+
+def zero_shot_classify(text, candidate_labels):
+    API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
+    headers = {"Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY')}"}
+    payload = {"inputs": text, "parameters": {"candidate_labels": candidate_labels}}
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload)
+        response.raise_for_status()  # Raises an HTTPError for bad responses
+        result = response.json()
+        logging.info(f"Classification result: {result}")
+        return result
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error in zero_shot_classify: {e}")
+        return None
 
 
 # Define Tools
@@ -218,15 +226,18 @@ str_number = str(random.randint(1000, 9999))
 
 
 async def chat_interaction(input_text: str, session_id: str = str_number) -> str:
-    print(f"Received input: {input_text}")
+    logging.info(f"Received input: {input_text}")
 
     # Retrieve the conversation history for the session
     history = conversation_history.get(session_id, [])
-    print(f"Current history for session {session_id}: {history}")
+    logging.info(f"Current history for session {session_id}: {history}")
 
     # Add the new user message to the history
     history.append({"role": "user", "content": input_text})
-    print(f"Updated history after adding user input: {history}")
+    logging.info(f"Updated history after adding user input: {history}")
+
+    # Update the conversation history in the dictionary
+    conversation_history[session_id] = history
 
     # Prepare the messages for the model, including the history
     messages = [
@@ -240,57 +251,41 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
     candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
 
     # Perform zero-shot classification
-    classification_result = classifier(input_text, candidate_labels)
+    classification_result = zero_shot_classify(input_text, candidate_labels)
+    logging.info(f"Classification result: {classification_result}")
 
-    assistant_response = ""
-
-    # If the classification score is low or the input is not about the specialized topics
-    if classification_result["scores"][0] < 0.6:
-        # Use the general chat function with the full conversation history
+    if classification_result is None:
+        logging.info("Classification failed, using general chat")
         assistant_response = general_chat(messages)
     else:
-        # Check if the highest classification score is above the threshold
         if classification_result["scores"][0] >= 0.6:
-            # Extract the most voted label
             most_voted_label = classification_result["labels"][0]
-            print("Most voted label:", most_voted_label)
+            logging.info(f"Most voted label: {most_voted_label}")
 
-            # Run a second classification using the remaining labels
-            candidate_labels_without_most_voted = [
-                label for label in candidate_labels if label != most_voted_label
-            ]
-            second_classification_result = classifier(
-                input_text, candidate_labels_without_most_voted
-            )
-            print("Second classification result:", second_classification_result)
-
-            # Determine which databases to query
-            databases_to_query = [most_voted_label]
-            if second_classification_result["scores"][0] >= 0.7:
-                second_most_voted_label = second_classification_result["labels"][0]
-                databases_to_query.append(second_most_voted_label)
-                print("Second most voted label:", second_most_voted_label)
-
-            # Query the appropriate databases and combine the results
-            all_documents = []
-            for db_label in databases_to_query:
-                if db_label == "ecofeminism":
+            try:
+                # Query the appropriate database
+                logging.info(f"Attempting to query {most_voted_label} database")
+                if most_voted_label == "ecofeminism":
                     vector_store = vector_store_ecofeminism
-                elif db_label == "permaculture":
+                elif most_voted_label == "permaculture":
                     vector_store = vector_store_permaculture
-                elif db_label == "mushrooms":
+                elif most_voted_label == "mushrooms":
                     vector_store = vector_store_mushrooms
+                else:
+                    logging.error(f"Unexpected label: {most_voted_label}")
+                    raise ValueError(f"Unexpected label: {most_voted_label}")
 
-                print(f"Querying {db_label} database.")
+                logging.info("Creating retriever")
                 retriever = vector_store.as_retriever()
+                logging.info("Getting relevant documents")
                 documents = retriever.get_relevant_documents(input_text)
-                all_documents.extend(documents)
+                logging.info(f"Retrieved {len(documents)} documents")
 
-            # Combine all retrieved documents
-            combined_docs = "\n\n".join([doc.page_content for doc in all_documents])
+                combined_docs = "\n\n".join([doc.page_content for doc in documents])
+                logging.info(f"Combined documents length: {len(combined_docs)}")
 
-            if combined_docs:
-                try:
+                if combined_docs:
+                    logging.info("Invoking document processing chain")
                     response = documentProcessingChain.invoke(
                         {
                             "documents": combined_docs,
@@ -301,54 +296,26 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
                     assistant_response = (
                         response if isinstance(response, str) else response.content
                     )
-                    print(f"Assistant response: {assistant_response}")
-                    print(
-                        f"Combined response from {', '.join(databases_to_query)} databases:",
-                        response,
-                    )
-                except Exception as e:
-                    print(f"An error occurred during document processing: {str(e)}")
-                    assistant_response = "I apologize, but I encountered an error while processing the documents. Could you please try again?"
-            else:
-                # If no documents found, use the general chat tool with history
-                print("No relevant documents found. Using general chat with history.")
-                assistant_response = general_chat(messages)
-        else:
-            # If classification score is low, use the agent to handle the query
-            print("Low classification confidence. Using agent to handle the query.")
-            try:
-                with get_openai_callback() as cb:
-                    start_time = time.time()
-                    agent_response = agent_executor.invoke(
-                        {"input": input_text},
-                        return_only_outputs=True,
-                        timeout=30,  # Set a 30-second timeout
-                    )
-                    end_time = time.time()
-
-                print(f"Agent execution time: {end_time - start_time:.2f} seconds")
-                print(f"Total tokens used: {cb.total_tokens}")
-                print(f"Prompt tokens: {cb.prompt_tokens}")
-                print(f"Completion tokens: {cb.completion_tokens}")
-                print(f"Total cost: ${cb.total_cost:.4f}")
-
-                if isinstance(agent_response, dict) and "output" in agent_response:
-                    assistant_response = agent_response["output"]
+                    logging.info(f"Generated response: {assistant_response}")
                 else:
-                    print(f"Unexpected agent response format: {agent_response}")
-                    assistant_response = "I'm sorry, I couldn't generate a proper response. Could you please rephrase your question?"
-
+                    logging.info("No relevant documents found. Using general chat.")
+                    assistant_response = general_chat(messages)
             except Exception as e:
-                print(f"An error occurred during agent execution: {str(e)}")
+                logging.error(f"Error during document processing: {str(e)}")
                 assistant_response = "I apologize, but I encountered an error while processing your request. Could you please try again?"
 
-    # Add the assistant's response to the history
-    history.append({"role": "assistant", "content": assistant_response})
-    print(f"Updated history after adding assistant response: {history}")
+            # After generating the assistant_response, add it to the history
+            history.append({"role": "assistant", "content": assistant_response})
+            conversation_history[session_id] = history
 
-    # Update the conversation history for the session
-    conversation_history[session_id] = history
+            logging.info(
+                f"Final history for session {session_id}: {conversation_history[session_id]}"
+            )
+        else:
+            logging.info("Low classification confidence. Using general chat.")
+            assistant_response = general_chat(messages)
 
+    logging.info(f"Final assistant response: {assistant_response}")
     return assistant_response
 
 
