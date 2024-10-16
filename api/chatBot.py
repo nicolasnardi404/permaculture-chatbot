@@ -366,7 +366,7 @@ async def generate_image_endpoint(chat_input: ChatInput):
 
         print(f"Generated text: {generated_text}")
 
-        prompt = f"Create an image based on this description: {generated_text}"
+        prompt = f"Create an image on biodiversity and nature based on this description: {generated_text}"
 
         from image_generator import generate_image
 
