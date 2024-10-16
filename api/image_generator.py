@@ -3,7 +3,11 @@ from PIL import Image
 import io
 
 API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
-headers = {"Authorization": "Bearer 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"}
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+headers = {"Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY')}"}
 
 
 def generate_image(prompt):
