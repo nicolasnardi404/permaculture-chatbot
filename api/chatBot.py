@@ -1,28 +1,19 @@
 import os
 from dotenv import load_dotenv
-from langchain.prompts import PromptTemplate
 from langchain_community.vectorstores import SupabaseVectorStore
-from langchain_openai import OpenAI, OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from supabase import create_client
-from langchain.schema.output_parser import StrOutputParser
-from transformers import pipeline
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import asyncio
-from image_generator import generate_image, save_image
-from datetime import datetime
-import random
-
-from langchain.agents import Tool, AgentExecutor, create_react_agent
-from langchain import LLMChain
-from typing import List
-import re
-import torch
-import base64
-import requests
-from fastapi import HTTPException
 import logging
+import requests
+import base64
+from huggingface_hub import InferenceClient
+from langchain.prompts import PromptTemplate
+from langchain.schema import StrOutputParser
+from typing import List
+from langchain.tools import Tool
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -168,7 +159,7 @@ def general_chat(messages: List[dict]) -> str:
 
 
 # Initialize the language model for the agent
-agent_llm = OpenAI(api_key=openAIApiKey, temperature=0)
+agent_llm = ChatOpenAI(api_key=openAIApiKey, temperature=0)
 
 # Define the prompt template for the agent
 agent_prompt = PromptTemplate.from_template(
@@ -206,11 +197,15 @@ agent_prompt = PromptTemplate.from_template(
 )
 
 # Create the agent
+from langchain.agents import create_react_agent
+
 agent = create_react_agent(llm=agent_llm, tools=tools, prompt=agent_prompt)
 
 # Create the agent executor with handle_parsing_errors=True
+from langchain.agents import AgentExecutor
+
 agent_executor = AgentExecutor.from_agent_and_tools(
-    agent=agent, tools=tools, verbose=True, handle_parsing_errors=True  # Add this line
+    agent=agent, tools=tools, verbose=True, handle_parsing_errors=True
 )
 
 # === Agent Integration Ends Here ===
@@ -221,6 +216,8 @@ import time
 from langchain.callbacks import get_openai_callback
 
 conversation_history = {}
+
+import random
 
 str_number = str(random.randint(1000, 9999))
 
@@ -347,8 +344,6 @@ async def chat_endpoint(chat_input: ChatInput):
         return {"error": str(e)}
 
 
-from huggingface_hub import InferenceClient
-
 client_hf = InferenceClient(api_key=hfApiKey)
 
 
@@ -372,6 +367,8 @@ async def generate_image_endpoint(chat_input: ChatInput):
         print(f"Generated text: {generated_text}")
 
         prompt = f"Create an image based on this description: {generated_text}"
+
+        from image_generator import generate_image
 
         print("Generating image")
         image_bytes = generate_image(prompt)

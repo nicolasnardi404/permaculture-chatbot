@@ -8,3 +8,5 @@ supabase
 requests
 pydantic
 huggingface_hub
+langchain_community
+pillow

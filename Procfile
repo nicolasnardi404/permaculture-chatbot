@@ -1,1 +1,1 @@
-     web: uvicorn backend.api.chatBot:app --host=0.0.0.0 --port=$PORT
+     web: uvicorn api.chatBot:app --host=0.0.0.0 --port=$PORT
