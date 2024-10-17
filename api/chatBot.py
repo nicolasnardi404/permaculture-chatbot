@@ -14,6 +14,7 @@ from langchain.prompts import PromptTemplate
 from langchain.schema import StrOutputParser
 from typing import List
 from langchain.tools import Tool
+import uuid
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -222,8 +223,11 @@ import random
 str_number = str(random.randint(1000, 9999))
 
 
-async def chat_interaction(input_text: str, session_id: str = str_number) -> str:
-    logging.info(f"Received input: {input_text}")
+async def chat_interaction(input_text: str, session_id: str = None) -> str:
+    if session_id is None:
+        session_id = str(uuid.uuid4())  # Generate a unique session ID
+
+    logging.info(f"Received input: {input_text} for session {session_id}")
 
     # Retrieve the conversation history for the session
     history = conversation_history.get(session_id, [])
@@ -336,10 +340,10 @@ class ChatInput(BaseModel):
 
 # Replace Flask route with FastAPI route
 @app.post("/chat")
-async def chat_endpoint(chat_input: ChatInput):
+async def chat_endpoint(chat_input: ChatInput, session_id: str = None):
     try:
-        response = await chat_interaction(chat_input.message)
-        return {"response": response}
+        response = await chat_interaction(chat_input.message, session_id)
+        return {"response": response, "session_id": session_id}
     except Exception as e:
         return {"error": str(e)}
 
