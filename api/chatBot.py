@@ -77,12 +77,12 @@ vector_store_mushrooms = SupabaseVectorStore(
 )
 
 # Define the prompt templates
-standaloneQuestionTemplate = "Given a question, convert it to a standalone question. question: {question} standalone question:"
+standaloneQuestionTemplate = "Given a question, convert it to a standalone question. If its not in english, translate it and make the standalone of it in english. question: {question} standalone question:"
 
 documentProcessingTemplate = """
 Process the information on: {documents}
 Also be aware of the historic of this conversation: {chat_history}
-You are a chatbot helping people with permaculture and mushrooms. Answer the question: {question}"""
+You are a chatbot helping people with permaculture and mushrooms. Answer it in the language that the question was made. Answer the question: {question}"""
 
 # Create prompt objects
 standaloneQuestionPrompt = PromptTemplate.from_template(standaloneQuestionTemplate)
