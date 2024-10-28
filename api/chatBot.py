@@ -14,6 +14,7 @@ from langchain.prompts import PromptTemplate
 from langchain.schema import StrOutputParser
 from typing import List
 from langchain.tools import Tool
+import uuid
 
 # Load environment variables from the .env file
 load_dotenv(override=True)
@@ -215,34 +216,32 @@ agent_executor = AgentExecutor.from_agent_and_tools(
 import time
 from langchain.callbacks import get_openai_callback
 
-conversation_history = {}
-
-import random
-
-str_number = str(random.randint(1000, 9999))
+# Add this near the top of the file where other global variables are defined
+conversation_history: dict = {}
 
 
-async def chat_interaction(input_text: str, session_id: str = str_number) -> str:
-    logging.info(f"Received input: {input_text}")
+async def chat_interaction(input_text: str, session_id: str) -> str:
+    logging.info(f"Processing chat for session: {session_id}")
 
-    # Retrieve the conversation history for the session
-    history = conversation_history.get(session_id, [])
-    logging.info(f"Current history for session {session_id}: {history}")
-
+    # Initialize history for new sessions
+    if session_id not in conversation_history:
+        conversation_history[session_id] = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms. "
+                "Maintain context from the conversation history and remember details about it. "
+                "If the question its too far away from the subjects just say Sorry I can answer this. Ask another question."
+            }
+        ]
+    
+    # Get existing history for the session
+    history = conversation_history[session_id]
+    
     # Add the new user message to the history
     history.append({"role": "user", "content": input_text})
-    logging.info(f"Updated history after adding user input: {history}")
 
-    # Update the conversation history in the dictionary
-    conversation_history[session_id] = history
-
-    # Prepare the messages for the model, including the history
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms. Use the conversation history to provide context-aware responses.",
-        }
-    ] + history
+    # Prepare the messages for the model, including the complete history
+    messages = history
 
     # Define candidate labels for classification
     candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
@@ -251,68 +250,14 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
     classification_result = zero_shot_classify(input_text, candidate_labels)
     logging.info(f"Classification result: {classification_result}")
 
-    if classification_result is None:
-        logging.info("Classification failed, using general chat")
-        assistant_response = general_chat(messages)
-    else:
-        if classification_result["scores"][0] >= 0.6:
-            most_voted_label = classification_result["labels"][0]
-            logging.info(f"Most voted label: {most_voted_label}")
+    if classification_result is None or classification_result["scores"][0] < 0.6:
+        logging.info("Using general chat with full conversation history")
+        assistant_response = general_chat(messages)  # Pass the full history
+    
+    # Make sure to update the history with the assistant's response
+    history.append({"role": "assistant", "content": assistant_response})
+    conversation_history[session_id] = history
 
-            try:
-                # Query the appropriate database
-                logging.info(f"Attempting to query {most_voted_label} database")
-                if most_voted_label == "ecofeminism":
-                    vector_store = vector_store_ecofeminism
-                elif most_voted_label == "permaculture":
-                    vector_store = vector_store_permaculture
-                elif most_voted_label == "mushrooms":
-                    vector_store = vector_store_mushrooms
-                else:
-                    logging.error(f"Unexpected label: {most_voted_label}")
-                    raise ValueError(f"Unexpected label: {most_voted_label}")
-
-                logging.info("Creating retriever")
-                retriever = vector_store.as_retriever()
-                logging.info("Getting relevant documents")
-                documents = retriever.get_relevant_documents(input_text)
-                logging.info(f"Retrieved {len(documents)} documents")
-
-                combined_docs = "\n\n".join([doc.page_content for doc in documents])
-                logging.info(f"Combined documents length: {len(combined_docs)}")
-
-                if combined_docs:
-                    logging.info("Invoking document processing chain")
-                    response = documentProcessingChain.invoke(
-                        {
-                            "documents": combined_docs,
-                            "question": input_text,
-                            "chat_history": messages,
-                        }
-                    )
-                    assistant_response = (
-                        response if isinstance(response, str) else response.content
-                    )
-                    logging.info(f"Generated response: {assistant_response}")
-                else:
-                    logging.info("No relevant documents found. Using general chat.")
-                    assistant_response = general_chat(messages)
-            except Exception as e:
-                logging.error(f"Error during document processing: {str(e)}")
-                assistant_response = "I apologize, but I encountered an error while processing your request. Could you please try again?"
-
-            # After generating the assistant_response, add it to the history
-            history.append({"role": "assistant", "content": assistant_response})
-            conversation_history[session_id] = history
-
-            logging.info(
-                f"Final history for session {session_id}: {conversation_history[session_id]}"
-            )
-        else:
-            logging.info("Low classification confidence. Using general chat.")
-            assistant_response = general_chat(messages)
-
-    logging.info(f"Final assistant response: {assistant_response}")
     return assistant_response
 
 
@@ -332,15 +277,29 @@ app.add_middleware(
 # Define request model
 class ChatInput(BaseModel):
     message: str
+    session_id: str | None = None
+    client_id: str  # Add this to track unique clients
 
 
 # Replace Flask route with FastAPI route
 @app.post("/chat")
 async def chat_endpoint(chat_input: ChatInput):
     try:
-        response = await chat_interaction(chat_input.message)
-        return {"response": response}
+        # Use client_id as part of the session tracking
+        if not chat_input.session_id:
+            # Create a new session for this client
+            session_id = f"{chat_input.client_id}_{str(uuid.uuid4())}"
+        else:
+            session_id = chat_input.session_id
+            
+        response = await chat_interaction(chat_input.message, session_id)
+        return {
+            "response": response, 
+            "session_id": session_id,
+            "client_id": chat_input.client_id
+        }
     except Exception as e:
+        logging.error(f"Error in chat endpoint: {e}")
         return {"error": str(e)}
 
 
@@ -393,3 +352,4 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("chatBot:app", host="0.0.0.0", port=port, reload=False)
+
