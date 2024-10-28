@@ -119,20 +119,31 @@ def zero_shot_classify(text, candidate_labels):
 
 
 # Define Tools
-def get_documents(query: str, category: str):
+def get_documents(query: str, category: str) -> str:
     """Retrieve documents from the specified category."""
-    if category == "ecofeminism":
-        vector_store = vector_store_ecofeminism
-    elif category == "permaculture":
-        vector_store = vector_store_permaculture
-    elif category == "mushrooms":
-        vector_store = vector_store_mushrooms
-    else:
-        return "I don't have information on that topic."
-    retriever = vector_store.as_retriever()
-    documents = retriever.get_relevant_documents(query)
-    combined_docs = "\n\n".join([doc.page_content for doc in documents])
-    return combined_docs
+    try:
+        if category == "ecofeminism":
+            vector_store = vector_store_ecofeminism
+        elif category == "permaculture":
+            vector_store = vector_store_permaculture
+        elif category == "mushrooms":
+            vector_store = vector_store_mushrooms
+        else:
+            return ""
+            
+        retriever = vector_store.as_retriever(
+            search_kwargs={"k": 3}  # Limit to top 3 most relevant documents
+        )
+        documents = retriever.get_relevant_documents(query)
+        
+        if not documents:
+            return ""
+            
+        combined_docs = "\n\n".join([doc.page_content for doc in documents])
+        return combined_docs
+    except Exception as e:
+        logging.error(f"Error retrieving documents: {e}")
+        return ""
 
 
 # Define the tools
@@ -228,33 +239,39 @@ async def chat_interaction(input_text: str, session_id: str) -> str:
         conversation_history[session_id] = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms. "
-                "Maintain context from the conversation history and remember details about it. "
-                "If the question its too far away from the subjects just say Sorry I can answer this. Ask another question."
+                "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms."
             }
         ]
     
-    # Get existing history for the session
     history = conversation_history[session_id]
-    
-    # Add the new user message to the history
     history.append({"role": "user", "content": input_text})
 
-    # Prepare the messages for the model, including the complete history
-    messages = history
+    try:
+        # First try to get relevant documents directly
+        docs = get_documents(input_text, "permaculture")  # Default to permaculture for plant-related queries
+        
+        if docs:
+            # Process the documents with a simple chain
+            prompt = f"""Based on the following information, answer the user's question about: {input_text}
+            
+            Context from documents:
+            {docs}
+            
+            Previous conversation:
+            {str(history[-5:])}
+            
+            Answer:"""
+            
+            response = ChatOpenAI(temperature=0.7)(prompt)
+            assistant_response = response.content
+        else:
+            # Fallback to general chat if no relevant documents found
+            assistant_response = general_chat(history)
 
-    # Define candidate labels for classification
-    candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
+    except Exception as e:
+        logging.error(f"Error in chat processing: {e}")
+        assistant_response = "I apologize, but I encountered an error. Please try asking your question differently."
 
-    # Perform zero-shot classification
-    classification_result = zero_shot_classify(input_text, candidate_labels)
-    logging.info(f"Classification result: {classification_result}")
-
-    if classification_result is None or classification_result["scores"][0] < 0.6:
-        logging.info("Using general chat with full conversation history")
-        assistant_response = general_chat(messages)  # Pass the full history
-    
-    # Make sure to update the history with the assistant's response
     history.append({"role": "assistant", "content": assistant_response})
     conversation_history[session_id] = history
 
