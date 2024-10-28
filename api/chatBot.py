@@ -222,8 +222,12 @@ import random
 str_number = str(random.randint(1000, 9999))
 
 
-async def chat_interaction(input_text: str, session_id: str = str_number) -> str:
-    logging.info(f"Received input: {input_text}")
+async def chat_interaction(
+    input_text: str,
+    session_id: str,
+    client_id: str | None = None
+) -> str:
+    logging.info(f"Processing chat for session: {session_id}, client: {client_id}")
 
     # Retrieve the conversation history for the session
     history = conversation_history.get(session_id, [])
@@ -253,7 +257,7 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
 
     if classification_result is None:
         logging.info("Classification failed, using general chat")
-        assistant_response = general_chat(messages)
+        assistant_response = general_chat(history)
     else:
         if classification_result["scores"][0] >= 0.6:
             most_voted_label = classification_result["labels"][0]
@@ -287,7 +291,7 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
                         {
                             "documents": combined_docs,
                             "question": input_text,
-                            "chat_history": messages,
+                            "chat_history": history,
                         }
                     )
                     assistant_response = (
@@ -296,7 +300,7 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
                     logging.info(f"Generated response: {assistant_response}")
                 else:
                     logging.info("No relevant documents found. Using general chat.")
-                    assistant_response = general_chat(messages)
+                    assistant_response = general_chat(history)
             except Exception as e:
                 logging.error(f"Error during document processing: {str(e)}")
                 assistant_response = "I apologize, but I encountered an error while processing your request. Could you please try again?"
@@ -304,13 +308,13 @@ async def chat_interaction(input_text: str, session_id: str = str_number) -> str
             # After generating the assistant_response, add it to the history
             history.append({"role": "assistant", "content": assistant_response})
             conversation_history[session_id] = history
-
+            
             logging.info(
                 f"Final history for session {session_id}: {conversation_history[session_id]}"
             )
         else:
             logging.info("Low classification confidence. Using general chat.")
-            assistant_response = general_chat(messages)
+            assistant_response = general_chat(history)
 
     logging.info(f"Final assistant response: {assistant_response}")
     return assistant_response
@@ -332,15 +336,29 @@ app.add_middleware(
 # Define request model
 class ChatInput(BaseModel):
     message: str
+    session_id: str | None = None
+    client_id: str | None = None
 
 
 # Replace Flask route with FastAPI route
 @app.post("/chat")
 async def chat_endpoint(chat_input: ChatInput):
     try:
-        response = await chat_interaction(chat_input.message)
-        return {"response": response}
+        # Use the provided session_id or generate a new one
+        session_id = chat_input.session_id or str(random.randint(1000, 9999))
+        
+        response = await chat_interaction(
+            input_text=chat_input.message,
+            session_id=session_id,
+            client_id=chat_input.client_id
+        )
+        
+        return {
+            "response": response,
+            "session_id": session_id  # Return the session_id to the client
+        }
     except Exception as e:
+        logging.error(f"Error in chat endpoint: {e}")
         return {"error": str(e)}
 
 
@@ -385,11 +403,38 @@ async def generate_image_endpoint(chat_input: ChatInput):
         return {"error": str(e)}
 
 
+# Add a cleanup function to prevent memory leaks
+from datetime import datetime, timedelta
+
+def cleanup_old_conversations():
+    """Remove conversation histories older than 24 hours"""
+    current_time = datetime.utcnow()
+    for session_id in list(conversation_history.keys()):
+        history = conversation_history[session_id]
+        if history:
+            last_message = history[-1]
+            if "timestamp" in last_message:
+                last_time = datetime.fromisoformat(last_message["timestamp"])
+                if current_time - last_time > timedelta(hours=24):
+                    del conversation_history[session_id]
+                    logging.info(f"Cleaned up conversation history for session {session_id}")
+
+# Add periodic cleanup
+import asyncio
+
+async def periodic_cleanup():
+    while True:
+        cleanup_old_conversations()
+        await asyncio.sleep(3600)  # Run every hour
+
 # Instructions to run with uvicorn:
 # uvicorn chatBot:app --reload
 
 if __name__ == "__main__":
     import uvicorn
-
+    
+    # Start the cleanup task
+    asyncio.create_task(periodic_cleanup())
+    
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("chatBot:app", host="0.0.0.0", port=port, reload=False)
