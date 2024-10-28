@@ -222,6 +222,7 @@ import random
 str_number = str(random.randint(1000, 9999))
 
 
+
 async def chat_interaction(
     input_text: str,
     session_id: str,
