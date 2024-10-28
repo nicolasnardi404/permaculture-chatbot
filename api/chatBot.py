@@ -77,12 +77,12 @@ vector_store_mushrooms = SupabaseVectorStore(
 )
 
 # Define the prompt templates
-standaloneQuestionTemplate = "Given a question, convert it to a standalone question. question: {question} standalone question:"
+standaloneQuestionTemplate = "Given a question, convert it to a standalone question. If its not in english, translate it and make the standalone of it in english. question: {question} standalone question:"
 
 documentProcessingTemplate = """
 Process the information on: {documents}
 Also be aware of the historic of this conversation: {chat_history}
-You are a chatbot helping people with permaculture and mushrooms. Answer the question: {question}"""
+You are a chatbot helping people with permaculture and mushrooms. Answer it in the language that the question was made. Answer the question: {question}"""
 
 # Create prompt objects
 standaloneQuestionPrompt = PromptTemplate.from_template(standaloneQuestionTemplate)
@@ -268,6 +268,7 @@ async def chat_interaction(input_text: str, session_id: str) -> str:
             # Fallback to general chat if no relevant documents found
             assistant_response = general_chat(history)
 
+
     except Exception as e:
         logging.error(f"Error in chat processing: {e}")
         assistant_response = "I apologize, but I encountered an error. Please try asking your question differently."
@@ -300,8 +301,9 @@ class ChatInput(BaseModel):
 
 # Replace Flask route with FastAPI route
 @app.post("/chat")
-async def chat_endpoint(chat_input: ChatInput):
+async def chat_endpoint(chat_input: ChatInput, session_id: str = None):
     try:
+
         # Use client_id as part of the session tracking
         if not chat_input.session_id:
             # Create a new session for this client
