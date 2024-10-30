@@ -33,4 +33,3 @@
 - **Embeddings**: `OpenAI Embeddings`
 - **Tools**: `LangChain`
 
-### 🔌 API Endpoints
