@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  A sophisticated AI chatbot specializing in permaculture, ecofeminism, and mushrooms, built with FastAPI and LangChain.
+  A AI chatbot specializing in permaculture, ecofeminism, and mushrooms, built with FastAPI and LangChain.
 </p>
 
 ---
