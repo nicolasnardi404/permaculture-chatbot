@@ -228,6 +228,7 @@ async def chat_interaction(
     session_id: str,
     client_id: str | None = None
 ) -> str:
+    print(f"Starting chat interaction for session: {session_id}, client: {client_id}")
     logging.info(f"Processing chat for session: {session_id}, client: {client_id}")
 
     # Retrieve the conversation history for the session
@@ -253,29 +254,47 @@ async def chat_interaction(
     candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
 
     # Perform zero-shot classification
+    print(f"Performing zero-shot classification for input: {input_text}")
     classification_result = zero_shot_classify(input_text, candidate_labels)
-    logging.info(f"Classification result: {classification_result}")
+    logging.info(f"First classification result: {classification_result}")
 
     if classification_result is None:
+        print("Classification failed, using general chat")
         logging.info("Classification failed, using general chat")
         assistant_response = general_chat(history)
     else:
-        if classification_result["scores"][0] >= 0.6:
-            most_voted_label = classification_result["labels"][0]
-            logging.info(f"Most voted label: {most_voted_label}")
+        # First classification
+        first_label = classification_result["labels"][0]
+        first_score = classification_result["scores"][0]
+        print(f"First most voted label: {first_label} with score: {first_score}")
 
-            try:
+        # Remove the most voted label and classify again
+        candidate_labels.remove(first_label)
+        second_classification_result = zero_shot_classify(input_text, candidate_labels)
+        logging.info(f"Second classification result: {second_classification_result}")
+
+        if second_classification_result is None:
+            print("Classification failed, using general chat")
+            logging.info("Classification failed, using general chat")
+            assistant_response = general_chat(history)
+        else:
+            # Second classification
+            second_label = second_classification_result["labels"][0]
+            second_score = second_classification_result["scores"][0]
+            print(f"Second most voted label: {second_label} with score: {second_score}")
+
+            if second_score >= 0.5:
                 # Query the appropriate database
-                logging.info(f"Attempting to query {most_voted_label} database")
-                if most_voted_label == "ecofeminism":
+                logging.info(f"Attempting to query {second_label} database")
+                if second_label == "ecofeminism":
                     vector_store = vector_store_ecofeminism
-                elif most_voted_label == "permaculture":
+                elif second_label == "permaculture":
                     vector_store = vector_store_permaculture
-                elif most_voted_label == "mushrooms":
+                elif second_label == "mushrooms":
                     vector_store = vector_store_mushrooms
                 else:
-                    logging.error(f"Unexpected label: {most_voted_label}")
-                    raise ValueError(f"Unexpected label: {most_voted_label}")
+                    logging.error(f"Unexpected label: {second_label}")
+                    raise ValueError(f"Unexpected label: {second_label}")
 
                 logging.info("Creating retriever")
                 retriever = vector_store.as_retriever()
@@ -302,20 +321,9 @@ async def chat_interaction(
                 else:
                     logging.info("No relevant documents found. Using general chat.")
                     assistant_response = general_chat(history)
-            except Exception as e:
-                logging.error(f"Error during document processing: {str(e)}")
-                assistant_response = "I apologize, but I encountered an error while processing your request. Could you please try again?"
-
-            # After generating the assistant_response, add it to the history
-            history.append({"role": "assistant", "content": assistant_response})
-            conversation_history[session_id] = history
-            
-            logging.info(
-                f"Final history for session {session_id}: {conversation_history[session_id]}"
-            )
-        else:
-            logging.info("Low classification confidence. Using general chat.")
-            assistant_response = general_chat(history)
+            else:
+                logging.info("Low classification confidence. Using general chat.")
+                assistant_response = general_chat(history)
 
     logging.info(f"Final assistant response: {assistant_response}")
     return assistant_response
