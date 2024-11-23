@@ -153,8 +153,14 @@ tools = [knowledge_tool, general_chat_tool]
 # Define the general chat function
 def general_chat(messages: List[dict]) -> str:
     """Handle general chat using the OpenAI model with conversation history."""
+    system_message = {
+        "role": "system",
+        "content": "You are a helpful assistant. Remember details from the conversation history, including names and context that users share. When asked about information that was previously shared in the conversation, refer back to it."
+    }
+    # Add system message at the start of the conversation
+    full_messages = [system_message] + messages
     general_llm = ChatOpenAI(api_key=openAIApiKey, temperature=0.7)
-    response = general_llm(messages)
+    response = general_llm(full_messages)
     return response.content
 
 
@@ -215,7 +221,7 @@ agent_executor = AgentExecutor.from_agent_and_tools(
 import time
 from langchain.callbacks import get_openai_callback
 
-conversation_history = {}
+chat_histories = {}
 
 import random
 
@@ -253,25 +259,15 @@ async def chat_interaction(
         print(f"\n=== Starting New Chat Interaction ===")
         print(f"Input text: {input_text}")
         
-        # Retrieve the conversation history for the session
-        history = conversation_history.get(session_id, [])
-        logging.info(f"Current history for session {session_id}: {history}")
-
-        # Add the new user message to the history
+        # Get existing history from the chat_histories dictionary
+        history = chat_histories.get(session_id, [])
+        print(f"\n=== Current Chat History ===")
+        print(f"History: {history}")
+        
+        # Update history with new user input
         history.append({"role": "user", "content": input_text})
-        logging.info(f"Updated history after adding user input: {history}")
-
-        # Update the conversation history in the dictionary
-        conversation_history[session_id] = history
-
-        # Prepare the messages for the model, including the history
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant specializing in permaculture, ecofeminism, and mushrooms. Use the conversation history to provide context-aware responses.",
-            }
-        ] + history
-
+        chat_histories[session_id] = history
+        
         # Define candidate labels for classification
         candidate_labels = ["ecofeminism", "permaculture", "mushrooms"]
 
@@ -282,7 +278,9 @@ async def chat_interaction(
 
         if classification_result is None:
             print("Classification failed, using general chat")
-            return general_chat(history)
+            assistant_response = general_chat(messages=history)
+            history.append({"role": "assistant", "content": assistant_response})
+            return assistant_response
         
         # Check if this is likely a general conversation
         highest_score = classification_result["scores"][0]
@@ -292,7 +290,9 @@ async def chat_interaction(
         # If all scores are very low, treat as general conversation
         if highest_score < 0.35:  # Threshold for general chat
             print("Scores too low, switching to general chat")
-            return general_chat(history)
+            assistant_response = general_chat(messages=history)
+            history.append({"role": "assistant", "content": assistant_response})
+            return assistant_response
             
         # Otherwise, proceed with RAG process
         all_documents = []
@@ -442,14 +442,14 @@ from datetime import datetime, timedelta
 def cleanup_old_conversations():
     """Remove conversation histories older than 24 hours"""
     current_time = datetime.utcnow()
-    for session_id in list(conversation_history.keys()):
-        history = conversation_history[session_id]
+    for session_id in list(chat_histories.keys()):
+        history = chat_histories[session_id]
         if history:
             last_message = history[-1]
             if "timestamp" in last_message:
                 last_time = datetime.fromisoformat(last_message["timestamp"])
                 if current_time - last_time > timedelta(hours=24):
-                    del conversation_history[session_id]
+                    del chat_histories[session_id]
                     logging.info(f"Cleaned up conversation history for session {session_id}")
 
 # Add periodic cleanup
