@@ -282,69 +282,75 @@ async def chat_interaction(
 
         if classification_result is None:
             print("Classification failed, using general chat")
-            assistant_response = general_chat(history)
-        else:
-            all_documents = []
+            return general_chat(history)
+        
+        # Check if this is likely a general conversation
+        highest_score = classification_result["scores"][0]
+        print(f"\n=== Classification Check ===")
+        print(f"Highest classification score: {highest_score}")
+        
+        # If all scores are very low, treat as general conversation
+        if highest_score < 0.35:  # Threshold for general chat
+            print("Scores too low, switching to general chat")
+            return general_chat(history)
             
-            # First Classification
-            print("\n=== First Classification Process ===")
-            first_label = classification_result["labels"][0]
-            first_score = classification_result["scores"][0]
-            print(f"Primary topic: {first_label} with score: {first_score}")
+        # Otherwise, proceed with RAG process
+        all_documents = []
+        
+        # First Classification
+        print("\n=== First Classification Process ===")
+        first_label = classification_result["labels"][0]
+        first_score = classification_result["scores"][0]
+        print(f"Primary topic: {first_label} with score: {first_score}")
+        
+        if first_score >= 0.35:
+            print(f"\n=== Retrieving Documents for {first_label} ===")
+            first_documents = get_documents_for_category(input_text, first_label)
+            if first_documents:
+                all_documents.extend(first_documents)
+                print(f"Retrieved {len(first_documents)} documents from {first_label}")
+        
+        # Second Classification
+        remaining_labels = [label for label in ["ecofeminism", "permaculture", "mushrooms"] 
+                          if label != first_label]
+        second_classification = zero_shot_classify(input_text, remaining_labels)
+        
+        if second_classification:
+            print("\n=== Second Classification Process ===")
+            second_label = second_classification["labels"][0]
+            second_score = second_classification["scores"][0]
+            print(f"Secondary topic: {second_label} with score: {second_score}")
             
-            # Get documents for first classification if score is high enough
-            if first_score >= 0.35:
-                print(f"\n=== Retrieving Documents for {first_label} ===")
-                first_documents = get_documents_for_category(input_text, first_label)
-                if first_documents:
-                    all_documents.extend(first_documents)
-                    print(f"Retrieved {len(first_documents)} documents from {first_label}")
-            
-            # Second Classification (excluding the first label)
-            remaining_labels = [label for label in ["ecofeminism", "permaculture", "mushrooms"] if label != first_label]
-            second_classification_result = zero_shot_classify(input_text, remaining_labels)
-            logging.info(f"Second classification result: {second_classification_result}")
-            
-            if second_classification_result:
-                second_label = second_classification_result["labels"][0]
-                second_score = second_classification_result["scores"][0]
-                print(f"\n=== Secondary Classification ===")
-                print(f"Label: {second_label} with score: {second_score}")
-
-                # Get documents for second classification if score is high enough
-                if second_score >= 0.5:
-                    print(f"\n=== Retrieving Documents for {second_label} ===")
-                    second_documents = get_documents_for_category(input_text, second_label)
+            if second_score >= 0.5:
+                print(f"\n=== Retrieving Documents for {second_label} ===")
+                second_documents = get_documents_for_category(input_text, second_label)
+                if second_documents:
                     all_documents.extend(second_documents)
                     print(f"Retrieved {len(second_documents)} documents from {second_label}")
 
-            # Process all retrieved documents
-            if all_documents:
-                print(f"\n=== Retrieved {len(all_documents)} Total Documents ===")
-                for i, doc in enumerate(all_documents):
-                    print(f"\nDocument {i+1}:")
-                    print(f"Content: {doc.page_content[:200]}...")
-                    print(f"Metadata: {doc.metadata}")
+        # Process documents or fall back to general chat
+        if all_documents:
+            print(f"\n=== Processing Combined Documents ===")
+            print(f"Total documents retrieved: {len(all_documents)}")
+            
+            combined_docs = "\n\n".join([doc.page_content for doc in all_documents])
+            print(f"Total combined document length: {len(combined_docs)} characters")
 
-                combined_docs = "\n\n".join([doc.page_content for doc in all_documents])
-                print(f"\n=== Processing Combined Documents ===")
-                print(f"Total combined document length: {len(combined_docs)} characters")
+            print("\n=== Generating Response ===")
+            response = documentProcessingChain.invoke({
+                "documents": combined_docs,
+                "question": input_text,
+                "chat_history": history,
+            })
+            return response if isinstance(response, str) else response.content
+        else:
+            print("\nNo relevant documents found, using general chat")
+            return general_chat(messages=history)
 
-                print("\n=== Generating Response ===")
-                response = documentProcessingChain.invoke({
-                    "documents": combined_docs,
-                    "question": input_text,
-                    "chat_history": history,
-                })
-                assistant_response = response if isinstance(response, str) else response.content
-            else:
-                print("\nNo relevant documents found, using general chat")
-
-        logging.info(f"Final assistant response: {assistant_response}")
-        return assistant_response
     except Exception as e:
-        logging.error(f"Error in chat endpoint: {e}")
-        return {"error": str(e)}
+        print(f"Error in chat_interaction: {e}")
+        logging.error(f"Error in chat_interaction: {e}")
+        return f"I apologize, but I encountered an error while processing your request. Please try again."
 
 
 # Initialize FastAPI app
