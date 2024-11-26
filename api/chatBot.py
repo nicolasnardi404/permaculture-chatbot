@@ -76,10 +76,11 @@ vector_store_mushrooms = SupabaseVectorStore(
 )
 
 # Define the prompt templates
-standaloneQuestionTemplate = "Given a question, convert it to a standalone question. question: {question} standalone question:"
+standaloneQuestionTemplate = "Given a question, convert it to a standalone question. if the question is another language convert it to english before, convert to standalone question: {question} standalone question:"
 
 documentProcessingTemplate = """
 Process the information on: {documents}
+Respect the language the user start the conversation and answer in that language.
 Also be aware of the historic of this conversation: {chat_history}
 You are a chatbot helping people with permaculture and mushrooms. Answer the question: {question}"""
 
@@ -359,7 +360,8 @@ app = FastAPI()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["https://www.cyberplanta.com/"],
+    # allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
